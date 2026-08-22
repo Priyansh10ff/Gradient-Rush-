@@ -1,4 +1,4 @@
-"""Video ingestion endpoint backed by OpenCV/OpenAI processing and ChromaDB."""
+"""Video ingestion endpoint backed by OpenCV/Gemini processing and ChromaDB."""
 
 from pathlib import Path
 
