@@ -1,29 +1,43 @@
 """Page-wise PDF extraction with optional Gemini Flash image analysis."""
 
+import logging
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
 from app.schemas.knowledge import KnowledgeNode, MediaModality
-from app.services.image_processor import ImageProcessingError, analyze_image
+from app.services.image_processor import analyze_image
+
+
+logger = logging.getLogger(__name__)
+_EMBEDDED_IMAGE_FALLBACK = "[Embedded image analysis skipped or unreadable]"
 
 
 class PdfProcessingError(RuntimeError):
     """Raised when a PDF cannot be opened or read page by page."""
 
 
-def _persist_page_image(image: object, page_number: int, image_index: int) -> Path | None:
-    """Persist an embedded pypdf image in the demo-accessible frames directory."""
+def _persist_page_image(
+    image: object, pdf_stem: str, page_number: int, image_index: int
+) -> Path | None:
+    """Persist an embedded PDF image as a browser-safe JPEG frame artifact."""
     data = getattr(image, "data", None)
     if not isinstance(data, bytes):
         return None
-    suffix = Path(str(getattr(image, "name", ""))).suffix.lower()
-    if suffix not in {".jpg", ".jpeg", ".png"}:
+    try:
+        from PIL import Image
+
+        with Image.open(BytesIO(data)) as source_image:
+            image_rgb = source_image.convert("RGB")
+            directory = Path.cwd() / "data" / "frames"
+            directory.mkdir(parents=True, exist_ok=True)
+            path = directory / (
+                f"{pdf_stem}_page_{page_number}_img_{image_index}.jpg"
+            )
+            image_rgb.save(path, format="JPEG")
+            return path
+    except Exception:
         return None
-    directory = Path.cwd() / "data" / "frames"
-    directory.mkdir(parents=True, exist_ok=True)
-    path = directory / f"pdf_page_{page_number:04d}_image_{image_index:03d}{suffix}"
-    path.write_bytes(data)
-    return path
 
 
 def process_pdf(file_path: str, *, client: Any | None = None) -> list[KnowledgeNode]:
@@ -51,22 +65,24 @@ def process_pdf(file_path: str, *, client: Any | None = None) -> list[KnowledgeN
         entities: list[str] = []
         frame_path: str | None = None
         for image_index, image in enumerate(embedded_images, start=1):
-            extracted_path = _persist_page_image(image, page_number, image_index)
+            extracted_path = _persist_page_image(
+                image, pdf_path.stem, page_number, image_index
+            )
             if extracted_path is None:
                 continue
             try:
                 analysis = analyze_image(extracted_path, client=client)
-            except ImageProcessingError as exc:
-                raise PdfProcessingError(
-                    f"Unable to analyze image {image_index} on page {page_number}."
-                ) from exc
-            summaries.append(analysis["visual_summary"])
-            entities.extend(analysis["entities"])
-            frame_path = frame_path or str(extracted_path)
+                summaries.append(analysis["visual_summary"])
+                entities.extend(analysis["entities"])
+            except Exception as e:
+                logger.warning(f"Warning: Failed to analyze image on page {page_number}: {e}")
+                summaries.append(_EMBEDDED_IMAGE_FALLBACK)
+            frame_path = frame_path or f"/frames/{extracted_path.name}"
 
         nodes.append(
             KnowledgeNode(
                 content=page_text,
+                transcript=page_text,
                 visual_summary="\n".join(summary for summary in summaries if summary),
                 timestamp=f"Page {page_number}",
                 frame_path=frame_path,

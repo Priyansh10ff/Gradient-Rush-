@@ -1,11 +1,16 @@
 """OpenCV/Gemini processing for timestamp-aligned video knowledge nodes."""
 
+import logging
 from pathlib import Path
 from typing import Any
 
 from app.schemas.knowledge import KnowledgeNode, MediaModality
-from app.services.audio_processor import AudioProcessingError, process_audio
+from app.services.audio_processor import process_audio
 from app.services.image_processor import ImageProcessingError, analyze_image
+
+
+logger = logging.getLogger(__name__)
+_NO_AUDIO_TRANSCRIPT = "[No spoken audio track detected in video]"
 
 
 class MediaProcessingError(RuntimeError):
@@ -73,8 +78,19 @@ def process_video(
 
     try:
         transcript_segments = process_audio(str(video_path), client=groq_client)
-    except AudioProcessingError as exc:
-        raise MediaProcessingError("Unable to transcribe the video audio track.") from exc
+        audio_available = bool(transcript_segments)
+        if not audio_available:
+            logger.warning(
+                "Audio extraction/transcription failed or no audio track found. "
+                "Proceeding with visual-only processing."
+            )
+    except Exception:
+        logger.warning(
+            "Audio extraction/transcription failed or no audio track found. "
+            "Proceeding with visual-only processing."
+        )
+        transcript_segments = []
+        audio_available = False
 
     output_directory = Path.cwd() / "data" / "frames"
     output_directory.mkdir(parents=True, exist_ok=True)
@@ -98,8 +114,10 @@ def process_video(
             if not cv2.imwrite(str(frame_path), frame):
                 raise MediaProcessingError(f"Unable to save extracted frame: {frame_path.name}")
             window_end = min(timestamp_seconds + frame_interval_seconds, duration_seconds)
-            transcript = _transcript_in_window(
-                transcript_segments, timestamp_seconds, window_end
+            transcript = (
+                _transcript_in_window(transcript_segments, timestamp_seconds, window_end)
+                if audio_available
+                else _NO_AUDIO_TRANSCRIPT
             )
             nodes.append(
                 KnowledgeNode(

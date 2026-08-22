@@ -75,24 +75,52 @@ def _display_result(result: dict[str, Any] | None, *, multimodal: bool) -> None:
 
     if multimodal:
         st.markdown("**Spoken Transcript**")
-        st.write(result.get("transcript") or "No transcript available.")
+        st.write(
+            result.get("transcript")
+            or result.get("content")
+            or "No transcript available."
+        )
         st.markdown("**Visual Summary**")
         st.write(result.get("visual_summary") or "No visual summary available.")
         st.markdown("**Timestamp / Location**")
         st.write(result.get("timestamp") or "Not available.")
 
         frame_path = result.get("frame_path")
-        if frame_path:
-            frame_url = f"{BACKEND_URL}{frame_path}"
+        frame_file = _frame_file_path(frame_path)
+        if frame_file is not None and frame_file.is_file():
+            frame_url = _frame_url(frame_path, frame_file)
             try:
-                st.image(frame_url, caption="Extracted visual evidence", use_container_width=True)
+                st.image(frame_url, caption="Extracted visual evidence", width="stretch")
             except Exception:
                 st.caption(f"Frame preview unavailable: {frame_path}")
     else:
         st.markdown("**Raw Spoken Transcript**")
-        st.write(result.get("transcript") or "No transcript available.")
+        st.write(
+            result.get("transcript")
+            or result.get("content")
+            or "No transcript available."
+        )
         if not result.get("visual_summary"):
             st.warning("Visual evidence missed by text-only search!")
+
+
+def _frame_file_path(frame_path: Any) -> Path | None:
+    """Resolve a backend frame reference to a local file before rendering it."""
+    if frame_path is None or str(frame_path).strip() in {"", "0"}:
+        return None
+    reference = str(frame_path).strip()
+    if reference.startswith("/frames/"):
+        return Path("data") / reference.lstrip("/")
+    candidate = Path(reference)
+    return candidate if candidate.is_file() else None
+
+
+def _frame_url(frame_path: Any, frame_file: Path) -> str:
+    """Build the browser URL for a verified local frame artifact."""
+    reference = str(frame_path).strip()
+    if reference.startswith("/frames/"):
+        return f"{BACKEND_URL}{reference}"
+    return f"{BACKEND_URL}/frames/{frame_file.name}"
 
 
 with st.sidebar:
