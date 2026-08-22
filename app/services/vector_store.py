@@ -97,15 +97,40 @@ class VectorStore:
 
     @classmethod
     def _document_for_node(cls, node: KnowledgeNode) -> str:
-        """Build the embedding document from text and optional visual context."""
-        parts = (
-            cls._content_text(node.content).strip(),
-            (node.transcript or "").strip(),
-            (node.visual_summary or "").strip(),
+        """Build the embedding document from text and optional visual context.
+
+        Short segments (e.g. 2–8 word audio lyrics) produce noisy embeddings
+        that score similarly against every query.  We enrich them by prepending
+        a source-context prefix so the embedding has enough signal to
+        discriminate between topics:
+
+            [audio | Edd_Sheeran.mp3 | 03:32 - 03:34]
+            Come on be my baby
+
+        This pattern dramatically improves retrieval precision for short clips
+        while not hurting longer PDF/image documents where the body text is
+        already sufficient.
+        """
+        transcript = (node.transcript or "").strip()
+        content = cls._content_text(node.content).strip()
+        visual = (node.visual_summary or "").strip()
+
+        # Build a context prefix that anchors short segments in embedding space.
+        modality_str = (
+            node.modality.value
+            if hasattr(node.modality, "value")
+            else str(node.modality)
         )
-        document = "\n\n".join(part for part in parts if part)
-        # Chroma accepts an empty document, but a stable non-empty fallback
-        # produces clearer embeddings for metadata-only image/frame nodes.
+        source_str = (node.source or "").strip()
+        timestamp_str = str(node.timestamp or "").strip()
+        prefix_parts = [p for p in [modality_str, source_str, timestamp_str] if p]
+        prefix = "[" + " | ".join(prefix_parts) + "]" if prefix_parts else ""
+
+        # Primary text: prefer transcript (speech/OCR), fall back to content.
+        primary_text = transcript or content
+
+        body_parts = [p for p in [prefix, primary_text, visual] if p]
+        document = "\n".join(body_parts)
         return document or "Multimodal knowledge item"
 
     def add_nodes(self, nodes: list[KnowledgeNode]) -> None:
@@ -139,26 +164,57 @@ class VectorStore:
         except Exception as exc:
             raise VectorStoreError("Unable to add nodes to the ChromaDB collection.") from exc
 
-    def search(self, query: str, limit: int = 5) -> list[dict[str, Any]]:
-        """Return nearest knowledge nodes with provenance and similarity scores."""
+    # Minimum cosine-similarity score a result must exceed to be returned.
+    # Results at or below this threshold are statistically indistinguishable
+    # from random noise for MiniLM-L6 embeddings and should be suppressed.
+    _MIN_SCORE = 0.30
+
+    # Maximum number of results allowed from a single source file.  Prevents
+    # many short segments from one audio/video file flooding the top-k list.
+    _MAX_PER_SOURCE = 2
+
+    def search(
+        self,
+        query: str,
+        limit: int = 5,
+        min_score: float | None = None,
+        max_per_source: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return nearest knowledge nodes with provenance and similarity scores.
+
+        Results below ``min_score`` are filtered out so the caller never
+        receives irrelevant noise hits.  Source-level deduplication
+        (``max_per_source``) prevents one audio file's many short segments
+        from dominating the entire result list.
+        """
         normalized_query = query.strip()
         if not normalized_query:
             raise ValueError("query must not be blank")
         if limit < 1:
             raise ValueError("limit must be at least 1")
+
+        effective_min_score = self._MIN_SCORE if min_score is None else min_score
+        effective_max_per_source = (
+            self._MAX_PER_SOURCE if max_per_source is None else max_per_source
+        )
+
         try:
             available = self.collection.count()
             if available == 0:
                 return []
+            # Fetch more candidates than requested so deduplication and
+            # threshold filtering still leave at least ``limit`` survivors.
+            fetch_n = min(limit * 4, available)
             results = self.collection.query(
                 query_texts=[normalized_query],
-                n_results=min(limit, available),
+                n_results=fetch_n,
                 include=["documents", "metadatas", "distances"],
             )
         except Exception as exc:
             raise VectorStoreError("Unable to search the ChromaDB collection.") from exc
 
         hits: list[dict[str, Any]] = []
+        source_counts: dict[str, int] = {}
         for node_id, document, metadata, distance in zip(
             results.get("ids", [[]])[0],
             results.get("documents", [[]])[0],
@@ -167,6 +223,18 @@ class VectorStore:
         ):
             node_metadata = metadata or {}
             numeric_distance = float(distance)
+            score = max(0.0, 1.0 - numeric_distance)
+
+            # --- Relevance threshold ---
+            if score < effective_min_score:
+                continue
+
+            # --- Source-level deduplication ---
+            source_key = str(node_metadata.get("source") or "unknown")
+            if source_counts.get(source_key, 0) >= effective_max_per_source:
+                continue
+            source_counts[source_key] = source_counts.get(source_key, 0) + 1
+
             hits.append(
                 {
                     "id": str(node_id),
@@ -177,31 +245,52 @@ class VectorStore:
                     "transcript": node_metadata.get("transcript"),
                     "source": node_metadata.get("source"),
                     "distance": numeric_distance,
-                    "similarity_score": max(0.0, 1.0 - numeric_distance),
+                    "similarity_score": score,
                 }
             )
+            if len(hits) >= limit:
+                break
+
         return hits
 
-    def search_text_only(self, query: str, limit: int = 5) -> list[dict[str, Any]]:
-        """Search only embeddings made from raw transcripts, never visual summaries."""
+    def search_text_only(
+        self,
+        query: str,
+        limit: int = 5,
+        min_score: float | None = None,
+        max_per_source: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Search only embeddings made from raw transcripts, never visual summaries.
+
+        Applies the same relevance threshold and source-level deduplication
+        as ``search()`` so the baseline result is also meaningful.
+        """
         normalized_query = query.strip()
         if not normalized_query:
             raise ValueError("query must not be blank")
         if limit < 1:
             raise ValueError("limit must be at least 1")
+
+        effective_min_score = self._MIN_SCORE if min_score is None else min_score
+        effective_max_per_source = (
+            self._MAX_PER_SOURCE if max_per_source is None else max_per_source
+        )
+
         try:
             available = self.text_only_collection.count()
             if available == 0:
                 return []
+            fetch_n = min(limit * 4, available)
             results = self.text_only_collection.query(
                 query_texts=[normalized_query],
-                n_results=min(limit, available),
+                n_results=fetch_n,
                 include=["documents", "metadatas", "distances"],
             )
         except Exception as exc:
             raise VectorStoreError("Unable to perform text-only ChromaDB search.") from exc
 
         hits: list[dict[str, Any]] = []
+        source_counts: dict[str, int] = {}
         for node_id, transcript, metadata, distance in zip(
             results.get("ids", [[]])[0],
             results.get("documents", [[]])[0],
@@ -210,6 +299,16 @@ class VectorStore:
         ):
             node_metadata = metadata or {}
             numeric_distance = float(distance)
+            score = max(0.0, 1.0 - numeric_distance)
+
+            if score < effective_min_score:
+                continue
+
+            source_key = str(node_metadata.get("source") or "unknown")
+            if source_counts.get(source_key, 0) >= effective_max_per_source:
+                continue
+            source_counts[source_key] = source_counts.get(source_key, 0) + 1
+
             hits.append(
                 {
                     "id": str(node_id),
@@ -220,9 +319,12 @@ class VectorStore:
                     "transcript": transcript,
                     "source": node_metadata.get("source"),
                     "distance": numeric_distance,
-                    "similarity_score": max(0.0, 1.0 - numeric_distance),
+                    "similarity_score": score,
                 }
             )
+            if len(hits) >= limit:
+                break
+
         return hits
 
 
