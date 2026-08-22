@@ -1,0 +1,139 @@
+# ─────────────────────────────────────────────
+# Python bytecode & cache
+# ─────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+
+# ─────────────────────────────────────────────
+# Virtual environments
+# ─────────────────────────────────────────────
+venv/
+.venv/
+env/
+ENV/
+.env/
+.ENV/
+
+# ─────────────────────────────────────────────
+# Distribution / packaging
+# ─────────────────────────────────────────────
+dist/
+build/
+*.egg-info/
+*.egg
+MANIFEST
+
+# ─────────────────────────────────────────────
+# Environment / secrets
+# ─────────────────────────────────────────────
+.env
+.env.*
+.env.local
+.env.production
+*.pem
+*.key
+secrets.json
+
+# ─────────────────────────────────────────────
+# Local vector store & databases
+# ─────────────────────────────────────────────
+chroma_db/
+chroma/
+*.db
+*.sqlite3
+*.sqlite
+
+# ─────────────────────────────────────────────
+# Media uploads, extracted frames, artifacts
+# ─────────────────────────────────────────────
+data/uploads/
+data/derived/
+data/chroma/
+data/models/
+data/temp_frames/
+data/pdf_images/
+
+# Raw media files anywhere in the repo
+*.mp4
+*.mov
+*.mkv
+*.avi
+*.webm
+*.m4v
+*.mp3
+*.wav
+*.m4a
+*.aac
+*.flac
+*.ogg
+
+# Image / PDF artifacts under data/
+data/**/*.jpg
+data/**/*.jpeg
+data/**/*.png
+data/**/*.gif
+data/**/*.bmp
+data/**/*.tiff
+data/**/*.webp
+data/**/*.pdf
+
+# ─────────────────────────────────────────────
+# ML model weights (large binary blobs)
+# ─────────────────────────────────────────────
+*.pt
+*.pth
+*.onnx
+*.bin
+*.safetensors
+models/
+
+# ─────────────────────────────────────────────
+# Logs & profiling
+# ─────────────────────────────────────────────
+*.log
+*.prof
+logs/
+htmlcov/
+.coverage
+coverage.xml
+
+# ─────────────────────────────────────────────
+# OS artifacts
+# ─────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# ─────────────────────────────────────────────
+# IDE / editor
+# ─────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.classpath
+
+# ─────────────────────────────────────────────
+# Jupyter
+# ─────────────────────────────────────────────
+.ipynb_checkpoints/
+
+# ─────────────────────────────────────────────
+# Temporary / misc
+# ─────────────────────────────────────────────
+tmp/
+temp/
+.tmp/
+*.tmp
+*.bak
+*.orig
