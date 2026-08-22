@@ -1,162 +1,79 @@
-"""Page-aware local PDF text and embedded-image extraction."""
+"""Page-wise PDF extraction with optional Gemini Flash image analysis."""
 
-import asyncio
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
-from uuid import UUID
+from typing import Any
 
-from app.schemas.knowledge import (
-    ExtractedKnowledgeBase,
-    MediaModality,
-    SourceAsset,
-    TemporalLocation,
-)
-from app.services.image_processor import (
-    ImageProcessingError,
-    ImageProcessingResult,
-    OCREngine,
-    extract_image_knowledge,
-)
+from app.schemas.knowledge import KnowledgeNode, MediaModality
+from app.services.image_processor import ImageProcessingError, analyze_image
 
 
 class PdfProcessingError(RuntimeError):
-    """Raised when a PDF cannot be opened or parsed by pypdf."""
+    """Raised when a PDF cannot be opened or read page by page."""
 
 
-class PdfDependencyUnavailableError(PdfProcessingError):
-    """Raised when pypdf is not installed."""
-
-
-@dataclass(frozen=True, slots=True)
-class PdfProcessingResult:
-    """All page-level knowledge and non-fatal extraction notices."""
-
-    knowledge: list[ExtractedKnowledgeBase]
-    warnings: list[str]
-
-
-def _embedded_images(page: object) -> Sequence[object]:
-    """Read pypdf's page image collection while retaining compatibility guards."""
-    try:
-        return list(getattr(page, "images", []))
-    except Exception as exc:
-        raise PdfProcessingError("Unable to inspect embedded PDF images.") from exc
-
-
-def _persist_embedded_image(
-    image_file: object, output_directory: Path, page_number: int, image_index: int
-) -> Path | None:
-    data = getattr(image_file, "data", None)
+def _persist_page_image(image: object, page_number: int, image_index: int) -> Path | None:
+    """Persist an embedded pypdf image in the demo-accessible frames directory."""
+    data = getattr(image, "data", None)
     if not isinstance(data, bytes):
         return None
+    suffix = Path(str(getattr(image, "name", ""))).suffix.lower()
+    if suffix not in {".jpg", ".jpeg", ".png"}:
+        return None
+    directory = Path.cwd() / "data" / "frames"
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"pdf_page_{page_number:04d}_image_{image_index:03d}{suffix}"
+    path.write_bytes(data)
+    return path
 
-    original_name = Path(str(getattr(image_file, "name", ""))).name
-    suffix = Path(original_name).suffix or ".img"
-    output_path = output_directory / (
-        f"page_{page_number:04d}_image_{image_index:03d}{suffix.lower()}"
-    )
-    output_path.write_bytes(data)
-    return output_path
 
-
-def extract_pdf_knowledge(
-    pdf_path: Path,
-    source_asset: SourceAsset,
-    artifact_directory: Path,
-    *,
-    parent_knowledge_id: UUID | None = None,
-    ocr_engine: OCREngine | None = None,
-) -> PdfProcessingResult:
-    """Extract selectable page text plus OCR/metadata from embedded PDF images."""
+def process_pdf(file_path: str, *, client: Any | None = None) -> list[KnowledgeNode]:
+    """Extract one KnowledgeNode per PDF page and describe embedded diagrams/images."""
+    pdf_path = Path(file_path)
+    if not pdf_path.is_file():
+        raise PdfProcessingError(f"PDF source does not exist: {pdf_path}")
     try:
         from pypdf import PdfReader
-    except ImportError as exc:
-        raise PdfDependencyUnavailableError(
-            "pypdf is not installed. Install project requirements to process PDFs."
-        ) from exc
-
-    try:
         reader = PdfReader(str(pdf_path))
+    except ImportError as exc:
+        raise PdfProcessingError("pypdf is required to process PDF files.") from exc
     except Exception as exc:
         raise PdfProcessingError(f"Unable to open PDF: {pdf_path.name}") from exc
 
-    image_directory = artifact_directory / "pdf_images"
-    image_directory.mkdir(parents=True, exist_ok=True)
-    knowledge: list[ExtractedKnowledgeBase] = []
-    warnings: list[str] = []
-
+    nodes: list[KnowledgeNode] = []
     for page_number, page in enumerate(reader.pages, start=1):
-        page_location = TemporalLocation(page_number=page_number)
         try:
-            text = (page.extract_text() or "").strip()
+            page_text = (page.extract_text() or "").strip()
+            embedded_images = list(getattr(page, "images", []))
         except Exception as exc:
-            warnings.append(f"Page {page_number}: text extraction failed ({exc}).")
-            text = ""
+            raise PdfProcessingError(f"Unable to extract PDF page {page_number}.") from exc
 
-        if text:
-            knowledge.append(
-                ExtractedKnowledgeBase(
-                    content=text,
-                    modality=MediaModality.PDF,
-                    timestamp=page_location,
-                    source=source_asset.filename,
-                    confidence=1.0,
-                    source_id=source_asset.source_id,
-                    parent_knowledge_id=parent_knowledge_id,
-                )
-            )
-
-        try:
-            embedded_images = _embedded_images(page)
-        except PdfProcessingError as exc:
-            warnings.append(f"Page {page_number}: {exc}")
-            continue
-
-        for image_index, image_file in enumerate(embedded_images, start=1):
-            image_path = _persist_embedded_image(
-                image_file, image_directory, page_number, image_index
-            )
-            if image_path is None:
-                warnings.append(
-                    f"Page {page_number}, image {image_index}: image bytes were unavailable."
-                )
+        summaries: list[str] = []
+        entities: list[str] = []
+        frame_path: str | None = None
+        for image_index, image in enumerate(embedded_images, start=1):
+            extracted_path = _persist_page_image(image, page_number, image_index)
+            if extracted_path is None:
                 continue
             try:
-                image_result: ImageProcessingResult = extract_image_knowledge(
-                    image_path,
-                    source_asset,
-                    modality=MediaModality.PDF,
-                    timestamp=page_location,
-                    parent_knowledge_id=parent_knowledge_id,
-                    ocr_engine=ocr_engine,
-                )
+                analysis = analyze_image(extracted_path, client=client)
             except ImageProcessingError as exc:
-                warnings.append(f"Page {page_number}, image {image_index}: {exc}")
-                continue
-            knowledge.extend(image_result.knowledge)
-            warnings.extend(
-                f"Page {page_number}, image {image_index}: {warning}"
-                for warning in image_result.warnings
+                raise PdfProcessingError(
+                    f"Unable to analyze image {image_index} on page {page_number}."
+                ) from exc
+            summaries.append(analysis["visual_summary"])
+            entities.extend(analysis["entities"])
+            frame_path = frame_path or str(extracted_path)
+
+        nodes.append(
+            KnowledgeNode(
+                content=page_text,
+                visual_summary="\n".join(summary for summary in summaries if summary),
+                timestamp=f"Page {page_number}",
+                frame_path=frame_path,
+                modality=MediaModality.PDF,
+                source=pdf_path.name,
+                entities=list(dict.fromkeys(entities)),
+                provenance={"page_number": page_number, "embedded_image_count": len(embedded_images)},
             )
-
-    return PdfProcessingResult(knowledge=knowledge, warnings=warnings)
-
-
-async def process_pdf(
-    pdf_path: Path,
-    source_asset: SourceAsset,
-    artifact_directory: Path,
-    *,
-    parent_knowledge_id: UUID | None = None,
-    ocr_engine: OCREngine | None = None,
-) -> PdfProcessingResult:
-    """Run PDF processing off the event loop because parsing and OCR are CPU-bound."""
-    return await asyncio.to_thread(
-        extract_pdf_knowledge,
-        pdf_path,
-        source_asset,
-        artifact_directory,
-        parent_knowledge_id=parent_knowledge_id,
-        ocr_engine=ocr_engine,
-    )
+        )
+    return nodes

@@ -96,6 +96,29 @@ class ExtractedKnowledge(ExtractedKnowledgeBase):
     attributes: dict[str, Any] = Field(default_factory=dict)
 
 
+class KnowledgeNode(BaseModel):
+    """A multimodal knowledge item suitable for vector indexing.
+
+    This deliberately keeps the original extracted fields (text, source and
+    timing) alongside optional visual context.  ``attributes`` preserves
+    provider-specific details without making the vector-store schema brittle.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str | UUID | None = None
+    content: str | dict[str, Any] | None = None
+    transcript: str | None = None
+    visual_summary: str | None = None
+    modality: MediaModality | str
+    timestamp: TemporalLocation | str | float | int | None = None
+    source: str | None = None
+    frame_path: str | None = None
+    entities: list[str] = Field(default_factory=list)
+    provenance: dict[str, Any] = Field(default_factory=dict)
+    attributes: dict[str, Any] = Field(default_factory=dict)
+
+
 class UploadAccepted(BaseModel):
     """Acknowledgement returned now; a worker can process it in a later phase."""
 
@@ -146,3 +169,66 @@ class QueryResponse(BaseModel):
 
     query: str
     results: list[RetrievalHit] = Field(default_factory=list)
+
+
+class VideoUploadResponse(BaseModel):
+    """Result returned after a video has been converted into knowledge nodes."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    success: bool
+    processed_nodes: int = Field(ge=0)
+    source: str
+
+
+class KnowledgeQueryRequest(BaseModel):
+    """Semantic query accepted by the KnowledgeNode Chroma collection."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    query: str = Field(min_length=1)
+    limit: int = Field(default=5, ge=1, le=50)
+
+
+class KnowledgeQueryResult(BaseModel):
+    """A display-ready multimodal Chroma search result."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    transcript: str | None = None
+    visual_summary: str | None = None
+    timestamp: str | None = None
+    frame_path: str | None = None
+    source: str | None = None
+    modality: str | None = None
+    similarity_score: float = Field(ge=0.0, le=1.0)
+    distance: float = Field(ge=0.0)
+
+
+class KnowledgeQueryResponse(BaseModel):
+    """Clean response shape for knowledge-node retrieval."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    query: str
+    results: list[KnowledgeQueryResult] = Field(default_factory=list)
+
+
+class KnowledgeUploadResponse(BaseModel):
+    """Result returned after an image or PDF is indexed as knowledge nodes."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    success: bool
+    processed_nodes: int = Field(ge=0)
+    source: str
+
+
+class KnowledgeComparisonResponse(BaseModel):
+    """Top result from multimodal retrieval alongside text-only retrieval."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    query: str
+    multimodal_result: KnowledgeQueryResult | None = None
+    text_only_baseline_result: KnowledgeQueryResult | None = None
