@@ -1,12 +1,12 @@
 """Gemini Flash Vision analysis for standalone images and PDF artifacts."""
 
 import json
-import logging
 import os
 from pathlib import Path
 from typing import Any
 
 from app.schemas.knowledge import KnowledgeNode, MediaModality
+from app.services.storage import storage_root
 
 
 class ImageProcessingError(RuntimeError):
@@ -14,28 +14,35 @@ class ImageProcessingError(RuntimeError):
 
 
 _IMAGE_MEDIA_TYPES = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png"}
-_UNAVAILABLE_IMAGE_CONTENT = "[Image uploaded - visual description unavailable]"
-logger = logging.getLogger(__name__)
+
+# gemini-1.5-flash and the whole Gemini 1.x family have been fully retired
+# by Google (requests now 404). gemini-2.5-flash is the current stable,
+# GA vision-capable model as of writing this.
+_GEMINI_MODEL = "gemini-2.5-flash"
 
 
-def _gemini_model() -> Any:
-    """Configure and return Gemini Flash using ``GEMINI_API_KEY`` from .env."""
+def _gemini_client() -> Any:
+    """Build a Gen AI SDK client using ``GEMINI_API_KEY`` from .env.
+
+    Uses the ``google-genai`` package (``from google import genai``), which
+    is Google's current, supported SDK. The older ``google-generativeai``
+    package this project originally used is deprecated upstream.
+    """
     try:
         from dotenv import load_dotenv
-        import google.generativeai as genai
+        from google import genai
     except ImportError as exc:
         raise ImageProcessingError(
-            "Gemini support requires google-generativeai and python-dotenv."
+            "Gemini support requires google-genai and python-dotenv."
         ) from exc
     load_dotenv()
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
         raise ImageProcessingError("GEMINI_API_KEY is not configured.")
     try:
-        genai.configure(api_key=api_key)
-        return genai.GenerativeModel("gemini-1.5-flash")
+        return genai.Client(api_key=api_key)
     except Exception as exc:
-        raise ImageProcessingError("Unable to initialize Gemini Flash.") from exc
+        raise ImageProcessingError("Unable to initialize the Gemini client.") from exc
 
 
 def analyze_image(image_path: Path, *, client: Any | None = None) -> dict[str, Any]:
@@ -53,19 +60,22 @@ def analyze_image(image_path: Path, *, client: Any | None = None) -> dict[str, A
         "systems, or concepts)."
     )
     try:
-        response = (client or _gemini_model()).generate_content(
-            [prompt, {"mime_type": media_type, "data": image_path.read_bytes()}],
-            generation_config={"response_mime_type": "application/json"},
+        from google.genai import types
+
+        active_client = client or _gemini_client()
+        response = active_client.models.generate_content(
+            model=_GEMINI_MODEL,
+            contents=[
+                prompt,
+                types.Part.from_bytes(data=image_path.read_bytes(), mime_type=media_type),
+            ],
+            config=types.GenerateContentConfig(response_mime_type="application/json"),
         )
         analysis = json.loads(response.text or "{}")
-    except Exception as exc:  # Provider and malformed-image errors vary by backend.
-        logger.warning("Gemini image analysis failed for %s: %s", image_path.name, exc)
-        ocr_text = _fallback_ocr(image_path)
-        return {
-            "visual_summary": _UNAVAILABLE_IMAGE_CONTENT,
-            "ocr_text": ocr_text or _UNAVAILABLE_IMAGE_CONTENT,
-            "entities": [],
-        }
+    except (OSError, json.JSONDecodeError, AttributeError) as exc:
+        raise ImageProcessingError(f"Gemini vision analysis failed for {image_path.name}.") from exc
+    except Exception as exc:  # Provider exceptions vary by installed SDK version.
+        raise ImageProcessingError(f"Gemini vision analysis failed for {image_path.name}.") from exc
 
     entities = analysis.get("entities", [])
     if not isinstance(entities, list):
@@ -77,41 +87,34 @@ def analyze_image(image_path: Path, *, client: Any | None = None) -> dict[str, A
     }
 
 
-def _fallback_ocr(image_path: Path) -> str:
-    """Extract readable text locally when Gemini Vision is unavailable."""
-    try:
-        import easyocr
+def _servable_frame_path(image_path: Path) -> str:
+    """Map a persisted upload path to the URL the /uploads mount serves it at.
 
-        model_directory = Path.cwd() / "data" / "models" / "easyocr"
-        allow_downloads = os.getenv("EASYOCR_ALLOW_MODEL_DOWNLOADS", "false").strip().lower()
-        reader = easyocr.Reader(
-            ["en"],
-            gpu=False,
-            model_storage_directory=str(model_directory),
-            download_enabled=allow_downloads in {"1", "true", "yes", "on"},
-            verbose=False,
-        )
-        regions = reader.readtext(str(image_path), detail=1, paragraph=False)
-        return " ".join(
-            str(region[1]).strip()
-            for region in regions
-            if len(region) >= 2 and str(region[1]).strip()
-        )
-    except Exception as exc:
-        logger.warning("Local OCR fallback failed for %s: %s", image_path.name, exc)
-        return ""
+    Falls back to the bare filename if the path lives outside the storage
+    root (e.g. in tests), which keeps callers from crashing on an edge case
+    that never happens in the running service.
+    """
+    try:
+        relative = image_path.resolve().relative_to(storage_root() / "uploads")
+    except ValueError:
+        return f"/uploads/{image_path.name}"
+    return f"/uploads/{relative.as_posix()}"
 
 
 def process_image(file_path: str, *, client: Any | None = None) -> KnowledgeNode:
     """Create one image knowledge node from a local PNG or JPEG upload."""
     image_path = Path(file_path)
     analysis = analyze_image(image_path, client=client)
+    ocr_text = analysis["ocr_text"]
     return KnowledgeNode(
-        content=analysis["ocr_text"],
+        # Both content AND transcript must be populated so every downstream
+        # consumer (text-only index, multimodal index, UI) can find the text.
+        content=ocr_text,
+        transcript=ocr_text,
         visual_summary=analysis["visual_summary"],
         modality=MediaModality.IMAGE,
         source=image_path.name,
-        frame_path=str(image_path),
+        frame_path=_servable_frame_path(image_path),
         entities=analysis["entities"],
         provenance={"kind": "standalone_image"},
     )

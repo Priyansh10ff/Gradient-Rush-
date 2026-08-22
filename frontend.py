@@ -8,11 +8,23 @@ import streamlit as st
 
 
 BACKEND_URL = "http://localhost:8000"
-UPLOAD_ENDPOINTS = {
+
+# Complete routing table covering all 4 modalities and 11 file extensions.
+UPLOAD_ENDPOINTS: dict[str, str] = {
+    # Video
     ".mp4": "/upload/video",
+    ".mov": "/upload/video",
+    ".avi": "/upload/video",
+    # Audio
+    ".mp3": "/upload/audio",
+    ".wav": "/upload/audio",
+    ".m4a": "/upload/audio",
+    # PDF
     ".pdf": "/upload/pdf",
+    # Image
     ".png": "/upload/image",
     ".jpg": "/upload/image",
+    ".jpeg": "/upload/image",
 }
 
 
@@ -38,7 +50,10 @@ def _upload_source(uploaded_file: Any) -> None:
     extension = Path(uploaded_file.name).suffix.lower()
     endpoint = UPLOAD_ENDPOINTS.get(extension)
     if endpoint is None:
-        st.error("Unsupported file type.")
+        st.error(
+            f"Unsupported file type: `{extension}`. "
+            "Supported: mp4, mov, avi, mp3, wav, m4a, pdf, png, jpg, jpeg."
+        )
         return
 
     files = {
@@ -49,7 +64,7 @@ def _upload_source(uploaded_file: Any) -> None:
         )
     }
     try:
-        with st.spinner("Processing and indexing your knowledge source..."):
+        with st.spinner("Processing and indexing your knowledge source…"):
             response = requests.post(
                 f"{BACKEND_URL}{endpoint}",
                 files=files,
@@ -59,7 +74,8 @@ def _upload_source(uploaded_file: Any) -> None:
             st.error(f"Upload failed: {_error_detail(response)}")
             return
         result = response.json()
-        indexed_count = result.get("indexed_count", result.get("processed_nodes", 0))
+        # Normalise across VideoUploadResponse / KnowledgeUploadResponse shapes.
+        indexed_count = result.get("indexed_count") or result.get("processed_nodes", 0)
         st.success(f"Indexed {indexed_count} KnowledgeNode(s).")
         st.toast("Knowledge source indexed successfully.")
     except requests.RequestException as exc:
@@ -74,61 +90,60 @@ def _display_result(result: dict[str, Any] | None, *, multimodal: bool) -> None:
         return
 
     if multimodal:
+        # --- Spoken transcript ---
         st.markdown("**Spoken Transcript**")
-        st.write(
-            result.get("transcript")
-            or result.get("content")
-            or "No transcript available."
-        )
-        st.markdown("**Visual Summary**")
-        st.write(result.get("visual_summary") or "No visual summary available.")
-        st.markdown("**Timestamp / Location**")
-        st.write(result.get("timestamp") or "Not available.")
+        # Show transcript if present, otherwise fall back to content.
+        # Only show the "unavailable" message if BOTH fields are missing.
+        transcript = result.get("transcript") or result.get("content")
+        if transcript:
+            st.write(transcript)
+        else:
+            st.caption("No transcript available.")
 
+        # --- Visual summary ---
+        visual_summary = result.get("visual_summary")
+        if visual_summary:
+            st.markdown("**Visual Summary**")
+            st.write(visual_summary)
+
+        # --- Timestamp ---
+        timestamp = result.get("timestamp")
+        if timestamp:
+            st.markdown("**Timestamp / Location**")
+            # Render as plain text — never show raw JSON brackets.
+            st.write(str(timestamp))
+
+        # --- Frame image ---
         frame_path = result.get("frame_path")
-        frame_file = _frame_file_path(frame_path)
-        if frame_file is not None and frame_file.is_file():
-            frame_url = _frame_url(frame_path, frame_file)
+        # Guard: only render if frame_path is a non-empty string that is not "0".
+        if frame_path and isinstance(frame_path, str) and frame_path.strip() not in ("", "0"):
+            frame_url = f"{BACKEND_URL}{frame_path}"
             try:
-                st.image(frame_url, caption="Extracted visual evidence", width="stretch")
+                st.image(frame_url, caption="Extracted visual evidence")
             except Exception:
                 st.caption(f"Frame preview unavailable: {frame_path}")
     else:
+        # --- Text-only baseline ---
         st.markdown("**Raw Spoken Transcript**")
-        st.write(
-            result.get("transcript")
-            or result.get("content")
-            or "No transcript available."
-        )
+        transcript = result.get("transcript") or result.get("content")
+        if transcript:
+            st.write(transcript)
+        else:
+            st.caption("No transcript available.")
         if not result.get("visual_summary"):
-            st.warning("Visual evidence missed by text-only search!")
-
-
-def _frame_file_path(frame_path: Any) -> Path | None:
-    """Resolve a backend frame reference to a local file before rendering it."""
-    if frame_path is None or str(frame_path).strip() in {"", "0"}:
-        return None
-    reference = str(frame_path).strip()
-    if reference.startswith("/frames/"):
-        return Path("data") / reference.lstrip("/")
-    candidate = Path(reference)
-    return candidate if candidate.is_file() else None
-
-
-def _frame_url(frame_path: Any, frame_file: Path) -> str:
-    """Build the browser URL for a verified local frame artifact."""
-    reference = str(frame_path).strip()
-    if reference.startswith("/frames/"):
-        return f"{BACKEND_URL}{reference}"
-    return f"{BACKEND_URL}/frames/{frame_file.name}"
+            st.warning(":material/visibility_off: Visual evidence missed by text-only search!")
 
 
 with st.sidebar:
     st.header("1. Upload Knowledge Source")
     uploaded_file = st.file_uploader(
         "Choose a source file",
-        type=["mp4", "pdf", "png", "jpg"],
-        help="Upload video, PDF, PNG, or JPG knowledge sources.",
+        # All 11 supported extensions across all 4 modalities.
+        type=["mp4", "mov", "avi", "mp3", "wav", "m4a", "pdf", "png", "jpg", "jpeg"],
+        help=(
+            "Upload a video (mp4, mov, avi), audio (mp3, wav, m4a), "
+            "PDF, or image (png, jpg, jpeg) knowledge source."
+        ),
     )
     if uploaded_file is not None:
         upload_key = f"{uploaded_file.name}:{uploaded_file.size}"
@@ -141,12 +156,12 @@ query = st.text_input(
     "Search question",
     placeholder="What database architecture was discussed?",
 )
-if st.button("Search & Compare", type="primary", use_container_width=True):
+if st.button("Search & Compare", type="primary"):
     if not query.strip():
         st.warning("Enter a search question first.")
     else:
         try:
-            with st.spinner("Searching multimodal and text-only indexes..."):
+            with st.spinner("Searching multimodal and text-only indexes…"):
                 response = requests.post(
                     f"{BACKEND_URL}/query/compare",
                     json={"query": query, "limit": 5},
@@ -158,10 +173,10 @@ if st.button("Search & Compare", type="primary", use_container_width=True):
                 comparison = response.json()
                 left_column, right_column = st.columns(2)
                 with left_column:
-                    st.subheader("✨ Multimodal RAG Result")
+                    st.subheader(":material/auto_awesome: Multimodal RAG Result")
                     _display_result(comparison.get("multimodal_result"), multimodal=True)
                 with right_column:
-                    st.subheader("⚠️ Text-Only Baseline Result")
+                    st.subheader(":material/warning: Text-Only Baseline Result")
                     _display_result(
                         comparison.get("text_only_baseline_result"), multimodal=False
                     )

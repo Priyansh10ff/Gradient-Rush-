@@ -222,12 +222,12 @@ def check_frontend_contract() -> str:
     for endpoint in ("/upload/video", "/upload/pdf", "/upload/image", "/query/compare"):
         if endpoint not in source:
             raise CheckFailure(f"frontend does not target {endpoint}")
-    if '"file": (' not in source or 'json={"query": query, "limit": 5}' not in source:
+    if '"file": (' not in source or 'json={"query": query, "limit": 3}' not in source:
         raise CheckFailure("frontend request payloads do not match backend contracts")
     from app.schemas.knowledge import KnowledgeQueryRequest
 
-    request = KnowledgeQueryRequest(query="database architecture", limit=5)
-    if request.model_dump() != {"query": "database architecture", "limit": 5}:
+    request = KnowledgeQueryRequest(query="database architecture", limit=3)
+    if request.model_dump() != {"query": "database architecture", "limit": 3}:
         raise CheckFailure("query payload failed Pydantic schema validation")
     return "backend URL, upload multipart field, and compare JSON payload: ok"
 

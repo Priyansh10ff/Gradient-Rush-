@@ -1,16 +1,17 @@
 """OpenCV/Gemini processing for timestamp-aligned video knowledge nodes."""
 
-import logging
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
 from app.schemas.knowledge import KnowledgeNode, MediaModality
-from app.services.audio_processor import process_audio
+from app.services.audio_processor import AudioProcessingError, process_audio
 from app.services.image_processor import ImageProcessingError, analyze_image
 
-
-logger = logging.getLogger(__name__)
-_NO_AUDIO_TRANSCRIPT = "[No spoken audio track detected in video]"
+# Gemini calls are network-bound, so describing several sampled frames at
+# once cuts ingestion latency roughly linearly with worker count instead of
+# paying full round-trip latency once per frame.
+_VISION_WORKERS = 4
 
 
 class MediaProcessingError(RuntimeError):
@@ -36,13 +37,21 @@ def _frame_filename(timestamp_seconds: float) -> str:
 
 
 def _describe_frame(frame_path: Path, client: Any | None) -> str:
-    """Ask Gemini Flash for a compact, retrieval-oriented visual description."""
+    """Ask Gemini Flash for a compact, retrieval-oriented visual description.
+
+    Returns a human-readable fallback string instead of raising so that a
+    single Gemini failure does not abort the entire video ingestion pipeline.
+    """
     try:
         summary = analyze_image(frame_path, client=client)["visual_summary"]
     except ImageProcessingError as exc:
-        raise MediaProcessingError(f"Gemini vision analysis failed for {frame_path.name}.") from exc
+        import logging
+        logging.getLogger(__name__).warning(
+            "Gemini vision analysis failed for %s: %s", frame_path.name, exc
+        )
+        return "[Visual description unavailable]"
     if not summary:
-        raise MediaProcessingError(f"Gemini vision returned no description for {frame_path.name}.")
+        return "[Visual description unavailable]"
     return summary
 
 
@@ -60,7 +69,7 @@ def _transcript_in_window(
 
 def process_video(
     file_path: str,
-    frame_interval_seconds: int = 10,
+    frame_interval_seconds: int = 3,
     *,
     gemini_client: Any | None = None,
     groq_client: Any | None = None,
@@ -78,19 +87,8 @@ def process_video(
 
     try:
         transcript_segments = process_audio(str(video_path), client=groq_client)
-        audio_available = bool(transcript_segments)
-        if not audio_available:
-            logger.warning(
-                "Audio extraction/transcription failed or no audio track found. "
-                "Proceeding with visual-only processing."
-            )
-    except Exception:
-        logger.warning(
-            "Audio extraction/transcription failed or no audio track found. "
-            "Proceeding with visual-only processing."
-        )
-        transcript_segments = []
-        audio_available = False
+    except AudioProcessingError as exc:
+        raise MediaProcessingError("Unable to transcribe the video audio track.") from exc
 
     output_directory = Path.cwd() / "data" / "frames"
     output_directory.mkdir(parents=True, exist_ok=True)
@@ -99,7 +97,10 @@ def process_video(
         capture.release()
         raise MediaProcessingError(f"Unable to open video: {video_path.name}")
 
-    nodes: list[KnowledgeNode] = []
+    # Pass 1: sample frames and compute their transcript windows. This is
+    # fast, local, and sequential because OpenCV's capture cursor can only
+    # move one frame at a time.
+    sampled: list[dict[str, Any]] = []
     try:
         fps = float(capture.get(cv2.CAP_PROP_FPS))
         frame_count = float(capture.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -114,27 +115,52 @@ def process_video(
             if not cv2.imwrite(str(frame_path), frame):
                 raise MediaProcessingError(f"Unable to save extracted frame: {frame_path.name}")
             window_end = min(timestamp_seconds + frame_interval_seconds, duration_seconds)
-            transcript = (
-                _transcript_in_window(transcript_segments, timestamp_seconds, window_end)
-                if audio_available
-                else _NO_AUDIO_TRANSCRIPT
+            transcript = _transcript_in_window(
+                transcript_segments, timestamp_seconds, window_end
             )
-            nodes.append(
-                KnowledgeNode(
-                    content=transcript,
-                    transcript=transcript,
-                    visual_summary=_describe_frame(frame_path, gemini_client),
-                    timestamp=f"{_format_time(timestamp_seconds)} - {_format_time(window_end)}",
-                    frame_path=str(frame_path),
-                    modality=MediaModality.VIDEO,
-                    source=video_path.name,
-                    provenance={
-                        "frame_timestamp_seconds": timestamp_seconds,
-                        "window_end_seconds": window_end,
-                    },
-                )
+            sampled.append(
+                {
+                    "frame_path": frame_path,
+                    "timestamp_seconds": timestamp_seconds,
+                    "window_end": window_end,
+                    "transcript": transcript,
+                }
             )
             timestamp_seconds += frame_interval_seconds
     finally:
         capture.release()
+
+    # Pass 2: describe every sampled frame with Gemini concurrently instead
+    # of paying one full round-trip per frame in sequence.
+    with ThreadPoolExecutor(max_workers=_VISION_WORKERS) as executor:
+        visual_summaries = list(
+            executor.map(
+                lambda item: _describe_frame(item["frame_path"], gemini_client), sampled
+            )
+        )
+
+    nodes: list[KnowledgeNode] = []
+    for item, visual_summary in zip(sampled, visual_summaries, strict=True):
+        frame_path: Path = item["frame_path"]
+        nodes.append(
+            KnowledgeNode(
+                content=item["transcript"],
+                transcript=item["transcript"],
+                visual_summary=visual_summary,
+                timestamp=(
+                    f"{_format_time(item['timestamp_seconds'])} - "
+                    f"{_format_time(item['window_end'])}"
+                ),
+                # Store a URL path served by the /frames static mount, not
+                # an absolute filesystem path (the frontend can't resolve
+                # the latter into a loadable image URL).
+                frame_path=f"/frames/{frame_path.name}",
+                modality=MediaModality.VIDEO,
+                source=video_path.name,
+                provenance={
+                    "frame_timestamp_seconds": item["timestamp_seconds"],
+                    "window_end_seconds": item["window_end"],
+                },
+            )
+        )
     return nodes

@@ -239,23 +239,57 @@ def get_knowledge_vector_store() -> VectorStore:
         return _knowledge_store_instance
 
 async def index_records(records: list[ExtractedKnowledgeBase]) -> int:
-    """Index legacy extracted records through the local KnowledgeNode store."""
-    nodes = [
-        KnowledgeNode(
-            content=record.content,
-            modality=record.modality,
-            timestamp=record.timestamp,
-            source=record.source,
-            provenance={
-                "source_id": str(record.source_id),
-                "parent_knowledge_id": (
-                    str(record.parent_knowledge_id)
-                    if record.parent_knowledge_id is not None
-                    else None
-                ),
-            },
+    """Index legacy extracted records through the local KnowledgeNode store.
+
+    Converts ``TemporalLocation`` timestamps to clean human-readable strings
+    (e.g. ``"01:15 - 01:30"`` or ``"Page 3"``) so the UI never receives raw
+    JSON dict objects in the timestamp field.  Sets ``transcript`` from
+    ``content`` so every record lands in both the multimodal and text-only
+    collections.
+    """
+
+    def _fmt_seconds(seconds: float) -> str:
+        mins, secs = divmod(max(0, int(seconds)), 60)
+        return f"{mins:02d}:{secs:02d}"
+
+    def _format_timestamp(loc: object) -> str | None:
+        if loc is None:
+            return None
+        # TemporalLocation pydantic model
+        page = getattr(loc, "page_number", None)
+        if page is not None:
+            return f"Page {page}"
+        start = getattr(loc, "start_seconds", None)
+        end = getattr(loc, "end_seconds", None)
+        if start is not None and end is not None:
+            return f"{_fmt_seconds(float(start))} - {_fmt_seconds(float(end))}"
+        if start is not None:
+            return _fmt_seconds(float(start))
+        return None
+
+    nodes = []
+    for record in records:
+        content_text = str(record.content) if record.content is not None else ""
+        nodes.append(
+            KnowledgeNode(
+                content=content_text,
+                # transcript must be set so the text-only search index
+                # receives this segment's text (add_nodes only indexes
+                # to text_only_collection when transcript is non-empty).
+                transcript=content_text,
+                modality=record.modality,
+                timestamp=_format_timestamp(record.timestamp),
+                source=record.source,
+                provenance={
+                    "source_id": str(record.source_id),
+                    "parent_knowledge_id": (
+                        str(record.parent_knowledge_id)
+                        if record.parent_knowledge_id is not None
+                        else None
+                    ),
+                },
+            )
         )
-        for record in records
-    ]
     await asyncio.to_thread(get_knowledge_vector_store().add_nodes, nodes)
     return len(nodes)
+

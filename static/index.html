@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>gradient-rush // multimodal rag pipeline</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+
+<header class="topbar">
+  <div class="wordmark">
+    <span class="bracket">[</span>gradient-rush<span class="bracket">]</span>
+  </div>
+  <div class="topbar-meta">
+    <span class="topbar-label">multimodal rag pipeline</span>
+    <span class="status" id="status-indicator" data-state="pending">
+      <span class="status-dot"></span>
+      <span class="status-text">connecting</span>
+    </span>
+  </div>
+</header>
+
+<main class="layout">
+
+  <!-- ============ SIDEBAR: INGESTION ============ -->
+  <section class="panel sidebar" aria-labelledby="ingest-heading">
+    <h2 id="ingest-heading" class="panel-title">01 · ingest</h2>
+
+    <div class="dropzone" id="dropzone" tabindex="0" role="button"
+         aria-label="Upload a video, audio, image, or PDF source">
+      <input type="file" id="file-input" accept=".mp4,.mp3,.wav,.m4a,.aac,.flac,.ogg,.png,.jpg,.jpeg,.pdf" hidden />
+      <div class="dropzone-inner">
+        <div class="dropzone-glyph">＋</div>
+        <div class="dropzone-copy">
+          <strong>drop a source</strong>
+          <span>mp4 · audio · png/jpg · pdf</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="modality-legend">
+      <span class="tag tag-video">video</span>
+      <span class="tag tag-audio">audio</span>
+      <span class="tag tag-image">image</span>
+      <span class="tag tag-pdf">pdf</span>
+    </div>
+
+    <div class="log-header">
+      <span>pipeline log</span>
+      <button class="ghost-btn" id="clear-log">clear</button>
+    </div>
+    <div class="log-feed" id="log-feed" aria-live="polite">
+      <div class="log-line log-muted">
+        <span class="log-prefix">$</span> waiting for a source&hellip;
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ MAIN: QUERY + RESULTS ============ -->
+  <section class="panel main" aria-labelledby="query-heading">
+    <h2 id="query-heading" class="panel-title">02 · query</h2>
+
+    <form class="query-form" id="query-form">
+      <label class="query-prompt" for="query-input">query&gt;</label>
+      <input
+        type="text"
+        id="query-input"
+        class="query-input"
+        placeholder="what architecture was discussed for reducing database load?"
+        autocomplete="off"
+      />
+      <button type="submit" class="run-btn" id="run-btn">run</button>
+    </form>
+
+    <div class="empty-state" id="empty-state">
+      <pre>
+   no query executed yet.
+
+   upload at least one source on the left,
+   then ask a question that needs evidence
+   from more than one modality.
+      </pre>
+    </div>
+
+    <div class="results" id="results" hidden>
+
+      <!-- diff-style comparison, the signature element -->
+      <div class="diff-block" id="diff-block">
+        <div class="diff-hunk-header" id="diff-hunk-header">@@ awaiting query @@</div>
+        <div class="diff-cols">
+          <div class="diff-col diff-add">
+            <div class="diff-col-label">+ multimodal</div>
+            <div class="diff-col-body" id="diff-multimodal"></div>
+          </div>
+          <div class="diff-col diff-remove">
+            <div class="diff-col-label">&minus; text-only baseline</div>
+            <div class="diff-col-body" id="diff-baseline"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- full ranked multimodal hit list -->
+      <div class="hits-header">
+        <span>03 · ranked evidence</span>
+        <span class="hits-count" id="hits-count"></span>
+      </div>
+      <div class="hits-list" id="hits-list"></div>
+    </div>
+
+  </section>
+</main>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

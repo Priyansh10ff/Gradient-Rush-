@@ -1,9 +1,12 @@
 """Free-tier Groq Whisper transcription with a local faster-whisper fallback."""
 
+import logging
 import os
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
+
+_log = logging.getLogger(__name__)
 
 
 class AudioProcessingError(RuntimeError):
@@ -70,6 +73,8 @@ def _transcribe_with_groq(path: Path, client: Any) -> list[dict[str, float | str
                 timestamp_granularities=["segment"],
             )
     except Exception as exc:  # SDK/provider exceptions vary between releases.
+        # Log the full traceback so Groq failures are never silently swallowed.
+        _log.exception("Groq Whisper transcription failed for %s: %s", path.name, exc)
         raise AudioProcessingError("Groq Whisper transcription failed.") from exc
     return _normalize_segments(response)
 
