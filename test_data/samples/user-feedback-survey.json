@@ -1,0 +1,20 @@
+[
+  {
+    "text": "Survey response #201: 'I almost deleted the app on the permissions screen, it asked for way too much at once.' Collected before the redesign shipped.",
+    "locator": "response-201",
+    "source": "user-feedback-survey.json",
+    "entities": ["onboarding", "permissions"]
+  },
+  {
+    "text": "Survey response #244: 'Liked that it explained why it needed my location before asking. Didn't feel like the app was asking for everything at once anymore.' Collected after the redesign shipped.",
+    "locator": "response-244",
+    "source": "user-feedback-survey.json",
+    "entities": ["onboarding", "permissions", "positive"]
+  },
+  {
+    "text": "Survey response #178: Unrelated feedback about wanting a dark mode toggle in settings.",
+    "locator": "response-178",
+    "source": "user-feedback-survey.json",
+    "entities": ["dark mode", "settings"]
+  }
+]

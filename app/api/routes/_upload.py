@@ -18,6 +18,7 @@ _EXTENSIONS: dict[MediaModality, set[str]] = {
     MediaModality.AUDIO: {".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg"},
     MediaModality.IMAGE: {".jpg", ".jpeg", ".png", ".webp", ".gif", ".tiff", ".bmp"},
     MediaModality.PDF: {".pdf"},
+    MediaModality.JSON: {".json", ".txt"},
 }
 
 
@@ -30,6 +31,8 @@ def _matches_modality(file: UploadFile, modality: MediaModality) -> bool:
         return True
     if modality is MediaModality.PDF:
         return content_type == "application/pdf"
+    if modality is MediaModality.JSON:
+        return content_type in {"application/json", "text/json", "text/plain"}
     return content_type.startswith(f"{modality.value}/")
 
 

@@ -1,0 +1,20 @@
+[
+  {
+    "text": "Ticket #4471: Customer reported checkout failing repeatedly with a generic timeout error during the incident window, before the backoff/circuit-breaker fix shipped.",
+    "locator": "ticket-4471",
+    "source": "support-tickets.json",
+    "entities": ["checkout", "timeout"]
+  },
+  {
+    "text": "Ticket #4502: Customer confirms checkout now completes normally after the latest deploy; no more timeout errors during checkout.",
+    "locator": "ticket-4502",
+    "source": "support-tickets.json",
+    "entities": ["checkout", "resolved"]
+  },
+  {
+    "text": "Ticket #4390: Unrelated request asking how to change the account email address.",
+    "locator": "ticket-4390",
+    "source": "support-tickets.json",
+    "entities": ["account settings"]
+  }
+]

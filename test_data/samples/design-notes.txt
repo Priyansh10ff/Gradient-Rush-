@@ -1,0 +1,7 @@
+Design notes (plain text, for the standalone JSON-record demo):
+
+The onboarding permission flow was split into three screens after funnel
+data showed a 61% drop-off on the old combined screen. See
+onboarding-design-spec.pdf for the exact before/after target metrics and
+onboarding-walkthrough.mp4 for the walkthrough with the funnel diagram and
+the new flow diagram.

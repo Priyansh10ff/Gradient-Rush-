@@ -83,6 +83,14 @@ data/**/*.tiff
 data/**/*.webp
 data/**/*.pdf
 
+# Bundled demo/test sample media is intentionally tracked so the repo is
+# testable by anyone without downloading anything — re-allow it explicitly
+# even though the patterns above/below would otherwise exclude it.
+!test_data/
+!test_data/**
+!test_data/samples/
+!test_data/samples/**
+
 # ─────────────────────────────────────────────
 # ML model weights (large binary blobs)
 # ─────────────────────────────────────────────

@@ -51,12 +51,34 @@ flowchart LR
 | Endpoint | Purpose |
 | --- | --- |
 | `POST /upload/video` | Upload an MP4, transcribe it, sample frames, generate visual summaries, and index aligned video nodes. |
+| `POST /upload/audio` | Upload an audio file, transcribe it, and index timestamped transcript nodes. |
 | `POST /upload/image` | Upload a PNG/JPEG, generate a visual summary, OCR-style text extraction, entities, and index one image node. |
 | `POST /upload/pdf` | Upload a PDF, extract page text and embedded visual artifacts, and index one node per page. |
-| `POST /query` | Search the combined transcript/text + visual-summary multimodal index. |
+| `POST /upload/json` | Upload a JSON file — a single object or an array of `{text/content, locator, source, entities}` records — and index one node per record. For structured data you already have (tickets, logs, metadata) that doesn't need OCR/ASR/vision. |
+| `POST /query` | Search the combined transcript/text + visual-summary multimodal index and get back a synthesized, cross-modal-grounded `answer` alongside the raw ranked results. |
 | `POST /query/compare` | Compare the top multimodal result with the top transcript-only baseline result. |
 | `GET /frames/{filename}` | Preview extracted video or PDF image artifacts during a demo. |
 | `GET /docs` | Explore the interactive FastAPI/OpenAPI documentation. |
+
+## Try it instantly with the bundled sample data
+
+`test_data/samples/` ships real video/audio/image/pdf/json files for one
+consistent test scenario, split across modalities on purpose — see
+[`test_data/samples/README.md`](test_data/samples/README.md). No downloads,
+recording, or API keys required to get a first result:
+
+```bash
+python test_data/seed_cross_modal_demo.py      # seeds equivalent knowledge directly, no keys needed
+python test_data/test_cross_modal_query.py     # asserts retrieval + answer actually span modalities
+```
+
+Or, with `.env` configured and the server running, exercise the real
+pipeline end to end:
+
+```bash
+uvicorn main:app --reload &
+python test_data/upload_samples.py             # uploads every sample through /upload/*, then runs the demo query
+```
 
 ### Example semantic query
 

@@ -9,11 +9,14 @@ from anyio import to_thread
 from fastapi import APIRouter, HTTPException, status
 
 from app.schemas.knowledge import (
+    AnswerSource,
     KnowledgeQueryRequest,
     KnowledgeComparisonResponse,
     KnowledgeQueryResponse,
     KnowledgeQueryResult,
+    SynthesizedAnswerModel,
 )
+from app.services.answer_synthesizer import synthesize_answer
 from app.services.vector_store import VectorStoreError, get_knowledge_vector_store
 
 _log = logging.getLogger(__name__)
@@ -137,9 +140,22 @@ async def query_knowledge(request: KnowledgeQueryRequest) -> KnowledgeQueryRespo
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
         ) from exc
 
+    # Synthesize one grounded answer from the retrieved evidence instead of
+    # leaving the caller to eyeball raw hits. This is what actually connects
+    # cross-modal evidence (transcript + visual_summary + page text) into a
+    # single answer, rather than stopping at "convert media to text, then
+    # vector search".
+    synthesized = await to_thread.run_sync(lambda: synthesize_answer(request.query, hits))
+
     return KnowledgeQueryResponse(
         query=request.query,
         results=[_to_query_result(hit) for hit in hits],
+        answer=SynthesizedAnswerModel(
+            answer=synthesized.answer,
+            grounded=synthesized.grounded,
+            method=synthesized.method,
+            sources=[AnswerSource(**s) for s in synthesized.sources],
+        ),
     )
 
 

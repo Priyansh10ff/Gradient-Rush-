@@ -14,6 +14,8 @@ const EXTENSION_ROUTES = {
   ".jpg": { endpoint: "/upload/image", modality: "image" },
   ".jpeg": { endpoint: "/upload/image", modality: "image" },
   ".pdf": { endpoint: "/upload/pdf", modality: "pdf" },
+  ".json": { endpoint: "/upload/json", modality: "json" },
+  ".txt": { endpoint: "/upload/json", modality: "json" },
 };
 
 // ---------------------------------------------------------------

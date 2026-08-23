@@ -1,0 +1,292 @@
+"""Seed a deliberately cross-modal knowledge base for demoing /query.
+
+This does NOT call Whisper/Gemini and needs no API keys -- it writes
+`KnowledgeNode` records straight into the same persistent ChromaDB store the
+API uses, so `uvicorn main:app` (or `test_pipeline.py`) can query them
+immediately.
+
+The scenario is designed so that no single modality alone answers the demo
+question -- the evidence is deliberately split:
+
+  - video transcript (spoken) names the failure mode but not the fix
+  - a video frame's visual_summary shows the retry/backoff diagram that IS
+    the fix, at a different timestamp than the transcript segment
+  - a PDF page gives the numeric backoff policy (base delay, max retries)
+  - a screenshot image shows the resulting dashboard graph after the fix
+    shipped, with OCR text of the annotation
+
+Demo question: "How did the team fix the checkout service's timeout
+failures, and what does the fix look like in production?"
+
+A text-only / single-modality system can find *one* of these fragments.
+Answering it fully requires combining the spoken explanation (video audio),
+the diagram (video frame / visual_summary), the numeric policy (PDF page
+text), and the after-the-fact proof (image OCR + visual_summary) -- i.e.
+genuine cross-modal retrieval, not just OCR-to-text-to-vector-search.
+
+This scenario mirrors the real sample files bundled under
+``test_data/samples/`` (which you can upload through the actual API — see
+``test_data/upload_samples.py``); this script instead writes equivalent
+knowledge directly into Chroma so the demo works instantly, with no API
+keys and no running server.
+
+Run:
+    python test_data/seed_cross_modal_demo.py
+"""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from app.schemas.knowledge import KnowledgeNode, MediaModality  # noqa: E402
+from app.services.vector_store import get_knowledge_vector_store  # noqa: E402
+
+
+def build_demo_nodes() -> list[KnowledgeNode]:
+    return [
+        # --- Video: the incident review, spoken explanation ---
+        KnowledgeNode(
+            transcript=(
+                "So the checkout service kept timing out under load because every "
+                "downstream call to the payments API retried immediately with no "
+                "backoff, which just hammered the payments API harder while it was "
+                "already struggling."
+            ),
+            modality=MediaModality.VIDEO,
+            timestamp="02:10 - 02:34",
+            source="incident-review.mp4",
+            frame_path="/frames/incident-review_02_10.jpg",
+            entities=["checkout service", "payments API", "timeout"],
+            provenance={"kind": "video_transcript_segment"},
+        ),
+        # --- Video: a later frame showing the fix diagram on the slide ---
+        KnowledgeNode(
+            transcript="And here's the diagram of what we changed.",
+            visual_summary=(
+                "A slide titled 'Exponential backoff + jitter' showing the checkout "
+                "service calling the payments API, with a retry loop annotated: "
+                "base delay 200ms, multiplier 2x, max 5 retries, random jitter added "
+                "to each wait. A circuit breaker box sits after the retry loop."
+            ),
+            modality=MediaModality.VIDEO,
+            timestamp="04:05 - 04:20",
+            source="incident-review.mp4",
+            frame_path="/frames/incident-review_04_05.jpg",
+            entities=["exponential backoff", "jitter", "circuit breaker"],
+            provenance={"kind": "video_frame_summary"},
+        ),
+        # --- PDF: the written postmortem with the exact numeric policy ---
+        KnowledgeNode(
+            content=(
+                "Remediation: checkout-service now wraps payments-api calls in an "
+                "exponential backoff retry policy: base_delay_ms=200, "
+                "multiplier=2.0, max_retries=5, jitter=full. A circuit breaker "
+                "trips after 10 consecutive failures within 30s and opens for 60s."
+            ),
+            transcript=(
+                "Remediation: checkout-service now wraps payments-api calls in an "
+                "exponential backoff retry policy: base_delay_ms=200, "
+                "multiplier=2.0, max_retries=5, jitter=full. A circuit breaker "
+                "trips after 10 consecutive failures within 30s and opens for 60s."
+            ),
+            visual_summary=(
+                "Page 3 of the postmortem PDF, section 'Remediation', containing a "
+                "small table of the retry policy parameters next to a sequence "
+                "diagram of checkout-service, the retry wrapper, and payments-api."
+            ),
+            modality=MediaModality.PDF,
+            timestamp="Page 3",
+            source="checkout-timeout-postmortem.pdf",
+            frame_path="/frames/postmortem_page_3.jpg",
+            entities=["exponential backoff", "circuit breaker", "checkout-service"],
+            provenance={"kind": "pdf_page"},
+        ),
+        # --- Image: the dashboard screenshot proving it worked, with OCR ---
+        KnowledgeNode(
+            content="p99 latency (checkout->payments) | before: 4200ms | after: 310ms",
+            transcript="p99 latency (checkout->payments) | before: 4200ms | after: 310ms",
+            visual_summary=(
+                "A Grafana dashboard screenshot showing the checkout-to-payments "
+                "p99 latency graph dropping sharply at the deploy marker, with an "
+                "annotation 'backoff+jitter deployed' at the drop point, and error "
+                "rate falling from 18% to under 1%."
+            ),
+            modality=MediaModality.IMAGE,
+            source="grafana-after-fix.png",
+            frame_path="/uploads/grafana-after-fix.png",
+            entities=["Grafana", "p99 latency", "checkout-service"],
+            provenance={"kind": "standalone_image"},
+        ),
+        # --- Distractor from an unrelated source, so retrieval must actually
+        #     discriminate rather than just returning "everything recent". ---
+        KnowledgeNode(
+            transcript=(
+                "Next up in the all-hands: the design team walked through the new "
+                "onboarding illustrations for the mobile app."
+            ),
+            modality=MediaModality.VIDEO,
+            timestamp="15:00 - 15:20",
+            source="all-hands-q3.mp4",
+            frame_path="/frames/all-hands_15_00.jpg",
+            entities=["onboarding", "illustrations"],
+            provenance={"kind": "video_transcript_segment"},
+        ),
+        # --- JSON: structured support tickets confirming customer impact,
+        #     mirroring the /upload/json input modality. ---
+        KnowledgeNode(
+            content=(
+                "Ticket #4471: Customer reported checkout failing repeatedly with a "
+                "generic timeout error during the incident window, before the "
+                "backoff/circuit-breaker fix shipped."
+            ),
+            transcript=(
+                "Ticket #4471: Customer reported checkout failing repeatedly with a "
+                "generic timeout error during the incident window, before the "
+                "backoff/circuit-breaker fix shipped."
+            ),
+            modality=MediaModality.JSON,
+            timestamp="ticket-4471",
+            source="support-tickets.json",
+            entities=["checkout", "timeout"],
+            provenance={"kind": "json_record"},
+        ),
+        KnowledgeNode(
+            content=(
+                "Ticket #4502: Customer confirms checkout now completes normally "
+                "after the latest deploy; no more timeout errors during checkout."
+            ),
+            transcript=(
+                "Ticket #4502: Customer confirms checkout now completes normally "
+                "after the latest deploy; no more timeout errors during checkout."
+            ),
+            modality=MediaModality.JSON,
+            timestamp="ticket-4502",
+            source="support-tickets.json",
+            entities=["checkout", "resolved"],
+            provenance={"kind": "json_record"},
+        ),
+        # ==============================================================
+        # Scenario 2: onboarding permission-flow redesign. Mirrors
+        # test_data/samples/onboarding-walkthrough.mp4,
+        # onboarding-ab-results.png, onboarding-design-spec.pdf, and
+        # user-feedback-survey.json. Query:
+        #   "Why did we redesign the onboarding permissions flow, and did
+        #    it actually improve completion rate?"
+        # ==============================================================
+        KnowledgeNode(
+            transcript=(
+                "Our funnel data showed most users dropped off on the permissions "
+                "screen because we asked for location, notifications, and contacts "
+                "all at once."
+            ),
+            modality=MediaModality.VIDEO,
+            timestamp="00:00 - 00:11",
+            source="onboarding-walkthrough.mp4",
+            frame_path="/frames/onboarding-walkthrough_00_00.jpg",
+            entities=["onboarding", "permissions", "funnel"],
+            provenance={"kind": "video_transcript_segment"},
+        ),
+        KnowledgeNode(
+            transcript="Here's the new flow we shipped.",
+            visual_summary=(
+                "A slide titled 'Fix: Split Permission Screens' showing three "
+                "separate screens: 1) Location with a reason shown first, "
+                "2) Notifications with a reason shown first, 3) Contacts access "
+                "deferred until the user taps 'Invite a friend'."
+            ),
+            modality=MediaModality.VIDEO,
+            timestamp="00:11 - 00:23",
+            source="onboarding-walkthrough.mp4",
+            frame_path="/frames/onboarding-walkthrough_00_11.jpg",
+            entities=["permission screens", "deferred contacts access"],
+            provenance={"kind": "video_frame_summary"},
+        ),
+        KnowledgeNode(
+            content=(
+                "Success Metrics: raise permission-screen completion rate from "
+                "39% to 65%+, and reduce unnecessary contacts-permission prompts "
+                "by at least 80%. Result: completion rate rose to 74%, and "
+                "contacts permission requests dropped 90% versus the old flow."
+            ),
+            transcript=(
+                "Success Metrics: raise permission-screen completion rate from "
+                "39% to 65%+, and reduce unnecessary contacts-permission prompts "
+                "by at least 80%. Result: completion rate rose to 74%, and "
+                "contacts permission requests dropped 90% versus the old flow."
+            ),
+            visual_summary=(
+                "Pages 3-4 of the design spec PDF, 'Success Metrics' and "
+                "'Result', with the target completion rate next to the actual "
+                "A/B test outcome."
+            ),
+            modality=MediaModality.PDF,
+            timestamp="Page 3",
+            source="onboarding-design-spec.pdf",
+            frame_path="/frames/onboarding-design-spec_page_3.jpg",
+            entities=["completion rate", "A/B test"],
+            provenance={"kind": "pdf_page"},
+        ),
+        KnowledgeNode(
+            content=(
+                "Metric: permission screen completion rate. Before (single "
+                "screen, 3 asks): completion = 39%. After (split screens, "
+                "deferred contacts): completion = 74%. Contacts permission "
+                "requests dropped 90% (now deferred)."
+            ),
+            transcript=(
+                "Metric: permission screen completion rate. Before (single "
+                "screen, 3 asks): completion = 39%. After (split screens, "
+                "deferred contacts): completion = 74%. Contacts permission "
+                "requests dropped 90% (now deferred)."
+            ),
+            visual_summary=(
+                "A results screenshot showing an A/B test comparison table: "
+                "'Before' (single combined permission screen, 39% completion) "
+                "versus 'After' (split screens with deferred contacts access, "
+                "74% completion)."
+            ),
+            modality=MediaModality.IMAGE,
+            source="onboarding-ab-results.png",
+            frame_path="/uploads/onboarding-ab-results.png",
+            entities=["A/B test", "completion rate"],
+            provenance={"kind": "standalone_image"},
+        ),
+        KnowledgeNode(
+            content=(
+                "Survey response #244: liked that it explained why it needed "
+                "location before asking; didn't feel like the app was asking "
+                "for everything at once anymore. Collected after the redesign "
+                "shipped."
+            ),
+            transcript=(
+                "Survey response #244: liked that it explained why it needed "
+                "location before asking; didn't feel like the app was asking "
+                "for everything at once anymore. Collected after the redesign "
+                "shipped."
+            ),
+            modality=MediaModality.JSON,
+            timestamp="response-244",
+            source="user-feedback-survey.json",
+            entities=["onboarding", "permissions", "positive"],
+            provenance={"kind": "json_record"},
+        ),
+    ]
+
+
+def main() -> None:
+    store = get_knowledge_vector_store()
+    nodes = build_demo_nodes()
+    store.add_nodes(nodes)
+    print(f"Seeded {len(nodes)} cross-modal demo nodes into '{store.collection_name}'.")
+    print(
+        "Try: curl -X POST http://127.0.0.1:8000/query -H 'Content-Type: application/json' "
+        "-d '{\"query\": \"How did the team fix the checkout timeout issue and how do we "
+        "know it worked?\", \"limit\": 5}'"
+    )
+
+
+if __name__ == "__main__":
+    main()

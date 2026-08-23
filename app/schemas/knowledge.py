@@ -15,6 +15,7 @@ class MediaModality(str, Enum):
     AUDIO = "audio"
     IMAGE = "image"
     PDF = "pdf"
+    JSON = "json"
 
 
 class TemporalLocation(BaseModel):
@@ -205,6 +206,30 @@ class KnowledgeQueryResult(BaseModel):
     distance: float = Field(ge=0.0)
 
 
+class AnswerSource(BaseModel):
+    """One piece of evidence the synthesized answer drew on."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    evidence_index: int | None = None
+    cited: bool = True
+    modality: str | None = None
+    source: str | None = None
+    locator: str | None = None
+    similarity_score: float | None = None
+
+
+class SynthesizedAnswerModel(BaseModel):
+    """A grounded, cross-modal answer synthesized from retrieval evidence."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    answer: str
+    grounded: bool
+    method: str
+    sources: list[AnswerSource] = Field(default_factory=list)
+
+
 class KnowledgeQueryResponse(BaseModel):
     """Clean response shape for knowledge-node retrieval."""
 
@@ -212,6 +237,7 @@ class KnowledgeQueryResponse(BaseModel):
 
     query: str
     results: list[KnowledgeQueryResult] = Field(default_factory=list)
+    answer: SynthesizedAnswerModel | None = None
 
 
 class KnowledgeUploadResponse(BaseModel):

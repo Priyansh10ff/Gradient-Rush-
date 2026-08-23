@@ -18,7 +18,7 @@ _IMAGE_MEDIA_TYPES = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "imag
 # gemini-1.5-flash and the whole Gemini 1.x family have been fully retired
 # by Google (requests now 404). gemini-2.5-flash is the current stable,
 # GA vision-capable model as of writing this.
-_GEMINI_MODEL = "gemini-2.5-flash"
+_GEMINI_MODEL = "gemini-3.6-flash"
 
 
 def _gemini_client() -> Any:
@@ -72,10 +72,18 @@ def analyze_image(image_path: Path, *, client: Any | None = None) -> dict[str, A
             config=types.GenerateContentConfig(response_mime_type="application/json"),
         )
         analysis = json.loads(response.text or "{}")
+    except ImageProcessingError:
+        # Already a clear, specific message (missing key, missing package,
+        # client init failure) -- don't swallow it into a generic one.
+        raise
     except (OSError, json.JSONDecodeError, AttributeError) as exc:
-        raise ImageProcessingError(f"Gemini vision analysis failed for {image_path.name}.") from exc
+        raise ImageProcessingError(
+            f"Gemini vision analysis failed for {image_path.name}: {exc}"
+        ) from exc
     except Exception as exc:  # Provider exceptions vary by installed SDK version.
-        raise ImageProcessingError(f"Gemini vision analysis failed for {image_path.name}.") from exc
+        raise ImageProcessingError(
+            f"Gemini vision analysis failed for {image_path.name}: {exc}"
+        ) from exc
 
     entities = analysis.get("entities", [])
     if not isinstance(entities, list):

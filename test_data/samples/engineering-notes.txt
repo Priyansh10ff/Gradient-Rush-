@@ -1,0 +1,6 @@
+Engineering notes (plain text, for the standalone JSON-record demo):
+
+The checkout timeout incident was traced to unbounded immediate retries
+against payments-api. The fix combines exponential backoff with jitter and
+a circuit breaker. See checkout-timeout-postmortem.pdf for the exact policy
+numbers and incident-review.mp4 for the walkthrough with diagrams.
